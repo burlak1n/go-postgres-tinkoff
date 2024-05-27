@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+
+	// "os"
 	"strconv"
 
 	// "strings"
@@ -12,9 +13,10 @@ import (
 	"database/sql"
 
 	//db driver
+	"embed"
+
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
-	"embed"
 
 	"os/signal"
 	"syscall"
@@ -32,11 +34,9 @@ import (
 var (
 	// инициализируем переменные, как глобальные в данном пакете,
 	// чтобы отредактировать их в функциях
-	client *investgo.Client
 
-	logger         *zap.SugaredLogger
-	sandboxService *investgo.SandboxServiceClient
-	cancel         context.CancelFunc
+	logger *zap.SugaredLogger
+	cancel context.CancelFunc
 	// conn *pgx.Conn
 	ctx context.Context
 
@@ -57,8 +57,7 @@ var (
 
 	flagAcс   bool
 	flagTrade bool
-	s *Service
-
+	s         *Service
 
 	msgAcc = `
 	Отправьте свой API токен. Где взять токен аутентификации? В разделе инвестиций вашего [личного кабинета tinkoff](https://www.tinkoff.ru/invest/). Далее:
@@ -75,19 +74,25 @@ var (
 	)
 )
 
+// var psqlInfoOld = fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+// 	os.Getenv("POSTGRES_HOSTNAME"),
+// 	os.Getenv("POSTGRES_USER"),
+// 	os.Getenv("POSTGRES_PASSWORD"),
+// 	os.Getenv("POSTGRES_DB"),
+// )
+
 var psqlInfo = fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
-	os.Getenv("POSTGRES_HOSTNAME"),
-	os.Getenv("POSTGRES_USER"),
-	os.Getenv("POSTGRES_PASSWORD"),
-	os.Getenv("POSTGRES_DB"),
+	"localhost",
+	"postgres",
+	"postgres",
+	"postgres",
 )
 
 const (
 	dbAccountId = "accountid"
-	dbTGID = "tgid"
-	dbAPIToken = "apitoken"
+	dbTGID      = "tgid"
+	dbAPIToken  = "apitoken"
 )
-
 
 // Service is the backend DB/REST api struct
 type Service struct {
@@ -139,7 +144,7 @@ func (s *Service) AddUserIntoDatabase(TGID int64, APIToken string) (newID int, e
 	}
 	defer insertStmt.Close()
 
-	AccountId := getAccountId(TGID, APIToken)
+	AccountId := getAccountId(APIToken)
 	logger.Info(AccountId)
 	if _, err = insertStmt.Exec(newID, TGID, APIToken, AccountId); err != nil {
 		logger.Fatal(err)
@@ -151,7 +156,7 @@ func (s *Service) AddUserIntoDatabase(TGID int64, APIToken string) (newID int, e
 	// 		log.Println(err)
 	// 	}
 	// }
-	
+
 	listUsersAll()
 
 	log.Printf("User #%d (%d tgid) added\n", newID, TGID)
@@ -206,7 +211,7 @@ func listUsersAll() {
 	}
 }
 
-func (s *Service) getSmthFromDB(TGID int64, a string) (res string){
+func (s *Service) getSmthFromDB(TGID int64, a string) (res string) {
 	db, err := s.getDatabase()
 	if err != nil {
 		log.Println(err)
@@ -215,17 +220,17 @@ func (s *Service) getSmthFromDB(TGID int64, a string) (res string){
 	defer db.Close()
 
 	sqlStatement := `SELECT $1 FROM users WHERE tgid=$2;`
-    row := db.QueryRow(sqlStatement, a, TGID)
-    switch err := row.Scan(&res); err {
-    case sql.ErrNoRows:
-        fmt.Println("No rows were returned!")
-    case nil:
-        return res
-    }
+	row := db.QueryRow(sqlStatement, a, TGID)
+	switch err := row.Scan(&res); err {
+	case sql.ErrNoRows:
+		fmt.Println("No rows were returned!")
+	case nil:
+		return res
+	}
 	return ""
 }
 
-func getAccountId(TGID int64, APIToken string) (AccountID string) {
+func getAccountId(APIToken string) (AccountID string) {
 	ctx, cancel = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 	cfg := configTemplate
 	cfg.Token = APIToken
@@ -239,7 +244,7 @@ func getAccountId(TGID int64, APIToken string) (AccountID string) {
 	// сервис песочницы нужен лишь для управления счетами песочнцы и пополнения баланса
 	// остальной функционал доступен через обычные сервисы, но с эндпоинтом песочницы
 	// для этого в конфиге сдк EndPoint = sandbox-invest-public-api.tinkoff.ru:443
-	sandboxService = client.NewSandboxServiceClient()
+	sandboxService := client.NewSandboxServiceClient()
 	// открыть счет в песочнице можно через Kreya или BloomRPC, просто указав его в конфиге
 	// или следующим образом из кода
 	accountsResp, err := sandboxService.GetSandboxAccounts()
@@ -267,11 +272,6 @@ func getAccountId(TGID int64, APIToken string) (AccountID string) {
 // -----init-----
 // init investgo, logger
 func loadInit() {
-	// // загружаем конфигурацию для сдк из .yaml файла
-	// config, err := investgo.LoadConfig("config.yaml")
-	// if err != nil {
-	// 	log.Fatalf("config loading error %v", err.Error())
-	// }
 	ctx, cancel = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 	// сдк использует для внутреннего логирования investgo.Logger
 	// для примера передадим uber.zap
@@ -301,14 +301,14 @@ func (s *Service) dbInit() {
 	defer db.Close()
 	fmt.Println("Successfully connected!")
 
-    if err := goose.SetDialect("postgres"); err != nil {
-        panic(err)
-    }
+	if err := goose.SetDialect("postgres"); err != nil {
+		panic(err)
+	}
 
-    if err := goose.Up(db, "migrations"); err != nil {
-        panic(err)
-    }
-	listUsers()
+	if err := goose.Up(db, "migrations"); err != nil {
+		panic(err)
+	}
+	listUsersAll()
 }
 
 func closeClient(client investgo.Client) {
@@ -328,14 +328,14 @@ func PayIn(TGID int64, v int64) string {
 	cfg := configTemplate
 	cfg.AccountId = AccountId
 	cfg.Token = APIToken
-	
+
 	client, err := investgo.NewClient(ctx, cfg, logger)
 	if err != nil {
 		logger.Fatalf("client creating error %v", err.Error())
 	}
 	defer closeClient(*client)
-	
-	sandboxService = client.NewSandboxServiceClient()
+
+	sandboxService := client.NewSandboxServiceClient()
 	payInResp, err := sandboxService.SandboxPayIn(&investgo.SandboxPayInRequest{
 		AccountId: AccountId,
 		Currency:  "RUB",
@@ -351,67 +351,15 @@ func PayIn(TGID int64, v int64) string {
 	}
 }
 
-// Добавить нового пользователя в БД
-// func addNewUser(TGID int64, APIToken string, AccountID string) error{
-// 	query := `
-// 	INSERT INTO users (tgid, apitoken, accountid)
-// 	VALUES (\$1, \$2, \$3);
-// 	`
-// 	_, err := conn.Exec(context.Background(), query, TGID, APIToken, AccountID)
-// 	return err
-// }
-
 func (s *Service) updateUser(TGID int64, APIToken string) error {
 	db, err := s.getDatabase()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-    _, err = db.Exec("UPDATE users SET apitoken=$1 WHERE tgid=$2", APIToken, TGID)
+	_, err = db.Exec("UPDATE users SET apitoken=$1 WHERE tgid=$2", APIToken, TGID)
 	return err
 }
-
-func listUsers() {
-	db, err := s.getDatabase()
-	if err != nil {
-        log.Fatal(err)
-    }
-	defer db.Close()
-
-	rows, err := db.Query(`SELECT * FROM users`)
-    if err != nil {
-        log.Fatal(err)
-    }
-	user := User{}
-    for rows.Next() {
-        if err := rows.Scan(&user.ID, &user.TGID, &user.APIToken, &user.AccountId); err != nil {
-            log.Fatal(err)
-        }
-        log.Println(user.ID, user.TGID, user.APIToken, user.AccountId)
-    }
-}
-// func findAPIByTGID(TGID int64) string {
-// 	var apitoken string
-// 	err := conn.QueryRow(context.Background(), "SELECT apitoken FROM users WHERE tgid=$1", TGID).Scan(&apitoken)
-// 	switch err {
-// 	case nil:
-// 		return apitoken
-// 	default:
-// 		logger.Info(err)
-// 	}
-// 	return ""
-// }
-// func findIDByTGID(TGID int64) string {
-// 	var accountid string
-// 	err := conn.QueryRow(context.Background(), "SELECT accountid FROM users WHERE tgid=$1", TGID).Scan(&accountid)
-// 	switch err {
-// 	case nil:
-// 		return accountid
-// 	default:
-// 		logger.Info(err)
-// 	}
-// 	return ""
-// }
 
 func startBot() {
 	// api, _ := os.LookupEnv("TGAPI")
@@ -448,7 +396,7 @@ func startBot() {
 					bot.Send(msg)
 				} else {
 					s.AddUserIntoDatabase(TGID, APIToken)
-					listUsers()
+					listUsersAll()
 					msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Аккаунт успешно зарегестрирован в боте!")
 					bot.Send(msg)
 				}
@@ -515,7 +463,7 @@ func startBot() {
 					msg := tgbotapi.NewMessage(chatcallbackId, "Меню")
 					msg.ReplyMarkup = menuKeyboard
 					bot.Send(msg)
-				}else {
+				} else {
 					msg_edit := tgbotapi.NewEditMessageText(chatcallbackId, update.CallbackQuery.Message.MessageID, "Отправьте количество рублей, на которое желаете пополнить свой баланс")
 					flagTrade = true
 					if _, err := bot.Send(msg_edit); err != nil {
@@ -540,7 +488,7 @@ func Start() {
 	service := Service{}
 
 	service.dbInit()
-	
+
 	startBot()
 	// пополняем счет песочницы на 100 000 рублей
 	// PayIn(-600000)
